@@ -1,0 +1,31 @@
+name: Update D1 Hospital Database
+
+on:
+  schedule:
+    # 매주 일요일 새벽 3시(UTC 기준 토요일 18시) 자동 실행
+    - cron: '0 18 * * 6'
+  workflow_dispatch: # 수동으로도 즉시 실행 가능하도록 설정
+
+jobs:
+  update-db:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run collector script
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DATABASE_ID: ${{ secrets.CF_DATABASE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          python collector.py
