@@ -3,16 +3,16 @@ import sys
 import requests
 
 # 환경변수 로드
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID")
-CF_DATABASE_ID = os.environ.get("CF_DATABASE_ID")
-CF_API_TOKEN = os.environ.get("CF_API_TOKEN")
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_DATABASE_ID = os.environ.get("CF_DATABASE_ID", "").strip()
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
 
 # 필수 값 검증
 if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
     print("❌ 에러: CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN 중 하나 이상이 설정되지 않았습니다.")
     sys.exit(1)
 
-# Cloudflare D1 REST API URL
+# Cloudflare D1 REST API URL (표준 Raw Query 엔드포인트)
 url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw"
 
 headers = {
@@ -72,6 +72,8 @@ try:
     
     if response.status_code != 200:
         sys.exit(1)
+        
+    print("🎉 D1 데이터베이스 업데이트 성공!")
 except Exception as e:
     print("❌ 요청 중 에러 발생:", e)
     sys.exit(1)
