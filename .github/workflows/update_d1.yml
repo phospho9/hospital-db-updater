@@ -20,12 +20,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install requests xmltodict
 
       - name: Run collector script
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DATABASE_ID: ${{ secrets.CF_DATABASE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
         run: |
           python collector.py
