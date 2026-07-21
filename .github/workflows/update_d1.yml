@@ -1,10 +1,9 @@
 name: Update D1 Hospital Database
 
 on:
-  schedule:
-    # 매주 일요일 새벽 3시(UTC 기준 토요일 18시) 자동 실행
-    - cron: '0 18 * * 6'
-  workflow_dispatch: # 수동으로도 즉시 실행 가능하도록 설정
+  # schedule:
+  #   - cron: '0 18 * * 6' # 스케줄 자동 실행 일시 중지
+  workflow_dispatch: # 관리자가 [Run workflow] 버튼을 누를 때만 실행
 
 jobs:
   update-db:
