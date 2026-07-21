@@ -1,55 +1,73 @@
 import os
 import sys
 import requests
+import xmltodict
 
 # 환경변수 로드
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
 CF_DATABASE_ID = os.environ.get("CF_DATABASE_ID", "").strip()
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
+DATA_GO_KR_API_KEY = os.environ.get("DATA_GO_KR_API_KEY", "").strip()
 
-# 필수 값 검증
-if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
-    print("❌ 에러: CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN 중 하나 이상이 설정되지 않았습니다.")
+if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN, DATA_GO_KR_API_KEY]):
+    print("❌ 에러: Secrets 정보(CF 정보 또는 DATA_GO_KR_API_KEY)가 부족합니다.")
     sys.exit(1)
 
-# Cloudflare D1 REST API URL (표준 Raw Query 엔드포인트)
-url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw"
-
-headers = {
-    "Authorization": f"Bearer {CF_API_TOKEN}",
-    "Content-Type": "application/json"
+# 1. 공공데이터 포털 API 호출 (건강보험심사평가원 병원기본목록)
+api_url = "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
+params = {
+    "serviceKey": DATA_GO_KR_API_KEY,
+    "pageNo": "1",
+    "numOfRows": "100",  # 1회 호출 시 가져올 병의원 수
 }
 
-# 테스트용 샘플 데이터
-sample_hospitals = [
-    {
-        "id": "HOSP_001",
-        "name": "서울중앙의원",
-        "type": "의원",
-        "address": "서울특별시 중구 세종대로 110",
-        "phone": "02-123-4567",
-        "latitude": 37.5665,
-        "longitude": 126.9780,
-        "is_silbi": 1
-    },
-    {
-        "id": "VET_001",
-        "name": "행복한동물병원",
-        "type": "동물병원",
-        "address": "경기도 안산시 단원구 중앙대로 123",
-        "phone": "031-987-6543",
-        "latitude": 37.3172,
-        "longitude": 126.8328,
-        "is_silbi": 0
-    }
-]
+print("🔄 공공데이터 포털 API 요청 중...")
+try:
+    api_res = requests.get(api_url, params=params, timeout=15)
+    if api_res.status_code != 200:
+        print(f"❌ 공공데이터 API 호출 실패: 상태 코드 {api_res.status_code}")
+        sys.exit(1)
 
-# SQL 쿼리 생성
+    # XML 응답을 파이썬 딕셔너리로 변환
+    data_dict = xmltodict.parse(api_res.text)
+    header = data_dict.get('response', {}).get('header', {})
+    
+    if header.get('resultCode') != '00':
+        print(f"❌ API 결과 에러: {header.get('resultMsg')}")
+        sys.exit(1)
+
+    items = data_dict.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+    if not items:
+        print("⚠️ 수집된 데이터가 없습니다.")
+        sys.exit(0)
+
+    if isinstance(items, dict):  # 데이터가 1건만 반환된 경우 리스트로 변환
+        items = [items]
+
+    print(f"✅ 총 {len(items)}건의 실제 병의원 데이터를 수집했습니다.")
+
+except Exception as e:
+    print(f"❌ API 데이터 수집 중 에러 발생: {e}")
+    sys.exit(1)
+
+# 2. D1 데이터베이스 쿼리 생성
 sql_statements = []
-for h in sample_hospitals:
+for item in items:
+    hosp_id = str(item.get('ykiho', '')).replace("'", "''")         # 암호화된 요양기호 (고유 ID)
+    name = str(item.get('yadmNm', '')).replace("'", "''")          # 병원명
+    cl_name = str(item.get('clCdNm', '')).replace("'", "''")       # 종별 (의원, 한의원, 병원 등)
+    addr = str(item.get('addr', '')).replace("'", "''")            # 주소
+    phone = str(item.get('telno', '')).replace("'", "''")          # 전화번호
+    
+    try:
+        longitude = float(item.get('XPos', 0.0))
+        latitude = float(item.get('YPos', 0.0))
+    except (ValueError, TypeError):
+        longitude, latitude = 0.0, 0.0
+
     sql = f"""
     INSERT INTO hospitals (id, name, type, address, phone, latitude, longitude, is_silbi, updated_at)
-    VALUES ('{h['id']}', '{h['name']}', '{h['type']}', '{h['address']}', '{h['phone']}', {h['latitude']}, {h['longitude']}, {h['is_silbi']}, datetime('now'))
+    VALUES ('{hosp_id}', '{name}', '{cl_name}', '{addr}', '{phone}', {latitude}, {longitude}, 0, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
         name=excluded.name,
         type=excluded.type,
@@ -57,23 +75,29 @@ for h in sample_hospitals:
         phone=excluded.phone,
         latitude=excluded.latitude,
         longitude=excluded.longitude,
-        is_silbi=excluded.is_silbi,
         updated_at=datetime('now');
     """
     sql_statements.append(sql)
 
 full_sql = " ".join(sql_statements)
-payload = {"sql": full_sql}
+
+# 3. Cloudflare D1 REST API로 데이터 전송
+d1_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw"
+headers = {
+    "Authorization": f"Bearer {CF_API_TOKEN}",
+    "Content-Type": "application/json"
+}
 
 try:
-    response = requests.post(url, headers=headers, json=payload)
-    print("D1 응답 상태 코드:", response.status_code)
-    print("D1 응답 결과:", response.text)
+    print("🚀 Cloudflare D1 데이터베이스 업데이트 중...")
+    d1_res = requests.post(d1_url, headers=headers, json={"sql": full_sql}, timeout=30)
     
-    if response.status_code != 200:
+    if d1_res.status_code == 200:
+        print("🎉 실제 공공데이터 병의원 DB 업데이트 성공!")
+    else:
+        print(f"❌ D1 전송 실패 (상태 코드 {d1_res.status_code}):", d1_res.text)
         sys.exit(1)
-        
-    print("🎉 D1 데이터베이스 업데이트 성공!")
+
 except Exception as e:
-    print("❌ 요청 중 에러 발생:", e)
+    print("❌ D1 업로드 중 에러 발생:", e)
     sys.exit(1)
