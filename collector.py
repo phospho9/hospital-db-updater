@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import requests
 import xmltodict
 
@@ -22,12 +23,27 @@ params = {
 }
 
 print("🔄 공공데이터 포털 API 요청 중...")
-try:
-    api_res = requests.get(api_url, params=params, timeout=15)
-    if api_res.status_code != 200:
-        print(f"❌ 공공데이터 API 호출 실패: 상태 코드 {api_res.status_code}")
-        sys.exit(1)
 
+# 재시도 로직 (최대 3회 시도)
+max_retries = 3
+api_res = None
+
+for attempt in range(1, max_retries + 1):
+    try:
+        print(f"👉 시도 {attempt}/{max_retries}...")
+        # 타임아웃을 60초로 넉넉하게 지정
+        api_res = requests.get(api_url, params=params, timeout=60)
+        if api_res.status_code == 200:
+            break
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ 요청 중 경고 발생 ({e}), 5초 후 재시도합니다...")
+        time.sleep(5)
+
+if not api_res or api_res.status_code != 200:
+    print(f"❌ 공공데이터 API 호출 실패 (상태 코드: {api_res.status_code if api_res else 'No Response'})")
+    sys.exit(1)
+
+try:
     # XML 응답을 파이썬 딕셔너리로 변환
     data_dict = xmltodict.parse(api_res.text)
     header = data_dict.get('response', {}).get('header', {})
@@ -47,13 +63,13 @@ try:
     print(f"✅ 총 {len(items)}건의 실제 병의원 데이터를 수집했습니다.")
 
 except Exception as e:
-    print(f"❌ API 데이터 수집 중 에러 발생: {e}")
+    print(f"❌ API 데이터 수집/파싱 중 에러 발생: {e}")
     sys.exit(1)
 
 # 2. D1 데이터베이스 쿼리 생성
 sql_statements = []
 for item in items:
-    hosp_id = str(item.get('ykiho', '')).replace("'", "''")         # 암호화된 요양기호 (고유 ID)
+    hosp_id = str(item.get('ykiho', '')).replace("'", "''")         # 요양기호 (고유 ID)
     name = str(item.get('yadmNm', '')).replace("'", "''")          # 병원명
     cl_name = str(item.get('clCdNm', '')).replace("'", "''")       # 종별 (의원, 한의원, 병원 등)
     addr = str(item.get('addr', '')).replace("'", "''")            # 주소
