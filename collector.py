@@ -4,7 +4,9 @@ import time
 import requests
 import xmltodict
 
-# 환경변수 로드
+# ---------------------------------------------------------------------------
+# 1. 환경변수 로드
+# ---------------------------------------------------------------------------
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
 CF_DATABASE_ID = os.environ.get("CF_DATABASE_ID", "").strip()
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
@@ -21,7 +23,9 @@ d1_headers = {
     "Content-Type": "application/json"
 }
 
-# 공공데이터 포털 API 설정 (병원기본목록)
+# ---------------------------------------------------------------------------
+# 2. 공공데이터 포털 API 설정 (병원기본목록)
+# ---------------------------------------------------------------------------
 api_url = "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
 num_of_rows = 500  # 안정적인 조회를 위해 페이지당 500건씩 수집
 page_no = 1
@@ -29,6 +33,9 @@ total_collected = 0
 
 print("🚀 스마트 병의원 세부 데이터 수집 및 D1 동기화를 시작합니다...")
 
+# ---------------------------------------------------------------------------
+# 3. 데이터 수집 및 가공 루프
+# ---------------------------------------------------------------------------
 while True:
     print(f"\n🔄 [{page_no}페이지] 수집 중... (페이지당 {num_of_rows}건)")
     
@@ -86,22 +93,48 @@ while True:
             except (ValueError, TypeError):
                 longitude, latitude = 0.0, 0.0
 
-            # --- 스마트 특성 추출 로직 ---
-            # 1. 입원실 여부 추정 (한방병원, 병원, 종합병원 등)
-            has_beds = 1 if any(k in cl_name for k in ['병원', '요양병원']) else 0
+            # ---------------------------------------------------------------------------
+            # 💡 [핵심] 원장님 기획 로직 적용 (네이버 설명 기반 추출)
+            # 향후 네이버 플레이스 크롤링 모듈이 붙을 때 설명글이 담길 변수입니다.
+            # 지금은 공공데이터만 있으므로 일단 빈 문자열("")로 처리하여 에러를 방지합니다.
+            # ---------------------------------------------------------------------------
+            naver_desc = "" 
             
-            # 2. 추나/도수/통증 특화 추정 (한의원, 한방병원, 정형외과, 신경외과, 재활의학과 등)
-            has_chuna = 1 if any(k in cl_name or k in name for k in ['한의원', '한방', '통증', '재활', '척추', '관절']) else 0
-            
-            # 3. 야간진료 여부 (상호명 및 종별 키워드 연동)
-            has_night = 1 if '야간' in name or '365' in name else 0
+            # 1. 한방 병/의원 여부 (상호명 기준)
+            is_korean_med = 1 if any(k in name for k in ['한의원', '한방병원']) else 0
 
-            # 4. 진료과목 태그 생성
-            subjects = cl_name  # 기본 종별을 진료과목 태그로 할당
+            # 2. 입원실 여부 (상호명에 '병원'이 있거나, 설명에 '입원실'이 있는 경우)
+            has_beds = 1 if ('병원' in name) or ('입원실' in naver_desc) else 0
 
+            # 3. 추나 여부 (설명 기준)
+            has_chuna = 1 if '추나' in naver_desc else 0
+
+            # 4. 약침 여부 (설명에 약침, 봉침, 봉독 중 하나라도)
+            has_yakchim = 1 if any(k in naver_desc for k in ['약침', '봉침', '봉독']) else 0
+
+            # 5. 첩약건강보험 여부 (설명 기준)
+            is_cheopyak = 1 if '첩약건강보험' in naver_desc else 0
+
+            # 6. 야간/365 진료 여부 (설명에 야간, 365 중 하나라도)
+            has_night = 1 if any(k in naver_desc for k in ['야간', '365']) else 0
+
+            # 7. 진료과목 태그 생성
+            subjects = cl_name 
+
+            # ---------------------------------------------------------------------------
+            # 4. D1 데이터베이스 쿼리 생성 (UPSERT)
+            # ---------------------------------------------------------------------------
             sql = f"""
-            INSERT INTO hospitals (id, name, type, address, phone, latitude, longitude, is_silbi, subjects, has_night, has_chuna, has_beds, updated_at)
-            VALUES ('{hosp_id}', '{name}', '{cl_name}', '{addr}', '{phone}', {latitude}, {longitude}, 0, '{subjects}', {has_night}, {has_chuna}, {has_beds}, datetime('now'))
+            INSERT INTO hospitals (
+                id, name, type, address, phone, latitude, longitude, 
+                is_silbi, subjects, has_night, has_chuna, has_beds, 
+                has_yakchim, is_cheopyak, updated_at
+            )
+            VALUES (
+                '{hosp_id}', '{name}', '{cl_name}', '{addr}', '{phone}', {latitude}, {longitude}, 
+                0, '{subjects}', {has_night}, {has_chuna}, {has_beds}, 
+                {has_yakchim}, {is_cheopyak}, datetime('now')
+            )
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 type=excluded.type,
@@ -113,11 +146,15 @@ while True:
                 has_night=excluded.has_night,
                 has_chuna=excluded.has_chuna,
                 has_beds=excluded.has_beds,
+                has_yakchim=excluded.has_yakchim,
+                is_cheopyak=excluded.is_cheopyak,
                 updated_at=datetime('now');
             """
             sql_statements.append(sql)
 
-        # Cloudflare D1으로 전송
+        # ---------------------------------------------------------------------------
+        # 5. Cloudflare D1으로 전송 실행
+        # ---------------------------------------------------------------------------
         full_sql = " ".join(sql_statements)
         d1_res = requests.post(d1_url, headers=d1_headers, json={"sql": full_sql}, timeout=60)
 
