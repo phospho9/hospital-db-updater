@@ -31,7 +31,7 @@ num_of_rows = 500  # 안정적인 조회를 위해 페이지당 500건씩 수집
 page_no = 1
 total_collected = 0
 
-print("🚀 스마트 병의원 세부 데이터 수집 및 D1 동기화를 시작합니다...")
+print("🚀 스마트 병의원 기본 데이터(뼈대) 수집 및 D1 동기화를 시작합니다...")
 
 # ---------------------------------------------------------------------------
 # 3. 데이터 수집 및 가공 루프
@@ -78,7 +78,7 @@ while True:
         if isinstance(items, dict):
             items = [items]
 
-        # SQL 문 생성 (세부 특성 태깅 포함)
+        # SQL 문 생성
         sql_statements = []
         for item in items:
             hosp_id = str(item.get('ykiho', '')).replace("'", "''")
@@ -93,36 +93,15 @@ while True:
             except (ValueError, TypeError):
                 longitude, latitude = 0.0, 0.0
 
-            # ---------------------------------------------------------------------------
-            # 💡 [핵심] 원장님 기획 로직 적용 (네이버 설명 기반 추출)
-            # 향후 네이버 플레이스 크롤링 모듈이 붙을 때 설명글이 담길 변수입니다.
-            # 지금은 공공데이터만 있으므로 일단 빈 문자열("")로 처리하여 에러를 방지합니다.
-            # ---------------------------------------------------------------------------
-            naver_desc = "" 
-            
-            # 1. 한방 병/의원 여부 (상호명 기준)
-            is_korean_med = 1 if any(k in name for k in ['한의원', '한방병원']) else 0
-
-            # 2. 입원실 여부 (상호명에 '병원'이 있거나, 설명에 '입원실'이 있는 경우)
-            has_beds = 1 if ('병원' in name) or ('입원실' in naver_desc) else 0
-
-            # 3. 추나 여부 (설명 기준)
-            has_chuna = 1 if '추나' in naver_desc else 0
-
-            # 4. 약침 여부 (설명에 약침, 봉침, 봉독 중 하나라도)
-            has_yakchim = 1 if any(k in naver_desc for k in ['약침', '봉침', '봉독']) else 0
-
-            # 5. 첩약건강보험 여부 (설명 기준)
-            is_cheopyak = 1 if '첩약건강보험' in naver_desc else 0
-
-            # 6. 야간/365 진료 여부 (설명에 야간, 365 중 하나라도)
-            has_night = 1 if any(k in naver_desc for k in ['야간', '365']) else 0
-
-            # 7. 진료과목 태그 생성
-            subjects = cl_name 
+            # 병원 규모를 나타내는 '병상' 여부는 공공데이터 분류명으로 충분히 파악 가능
+            has_beds = 1 if any(k in cl_name for k in ['병원', '요양병원']) else 0
+            subjects = cl_name
 
             # ---------------------------------------------------------------------------
-            # 4. D1 데이터베이스 쿼리 생성 (UPSERT)
+            # 💡 [핵심] 역할 분리: ON CONFLICT DO UPDATE 구문 수정
+            # 새로 등록된 병원(INSERT)에는 기본값 0을 임시로 넣어줍니다. (네이버 크롤러가 나중에 채움)
+            # 이미 등록된 병원(UPDATE)은 주소/전화번호 등 기본 뼈대만 업데이트하고,
+            # 네이버 크롤러가 정성스럽게 모아둔 특화 진료(has_chuna 등) 값은 아예 건드리지 않습니다.
             # ---------------------------------------------------------------------------
             sql = f"""
             INSERT INTO hospitals (
@@ -132,8 +111,8 @@ while True:
             )
             VALUES (
                 '{hosp_id}', '{name}', '{cl_name}', '{addr}', '{phone}', {latitude}, {longitude}, 
-                0, '{subjects}', {has_night}, {has_chuna}, {has_beds}, 
-                {has_yakchim}, {is_cheopyak}, datetime('now')
+                0, '{subjects}', 0, 0, {has_beds}, 
+                0, 0, datetime('now')
             )
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
@@ -143,11 +122,7 @@ while True:
                 latitude=excluded.latitude,
                 longitude=excluded.longitude,
                 subjects=excluded.subjects,
-                has_night=excluded.has_night,
-                has_chuna=excluded.has_chuna,
                 has_beds=excluded.has_beds,
-                has_yakchim=excluded.has_yakchim,
-                is_cheopyak=excluded.is_cheopyak,
                 updated_at=datetime('now');
             """
             sql_statements.append(sql)
@@ -166,7 +141,7 @@ while True:
             break
 
         if total_collected >= total_count:
-            print("🎉 전국의 모든 병의원 세부 데이터 동기화 완료!")
+            print("🎉 전국의 모든 병의원 뼈대 데이터 동기화 완료!")
             break
 
         page_no += 1
