@@ -47,15 +47,12 @@ def get_last_page_from_d1():
     if not res:
         return 0
     
-    # 1. D1 raw 결과가 'results' (리스트 형태)로 올 때
     results = res.get("results", [])
     if isinstance(results, list) and len(results) > 0:
         return results[0].get("value", 0)
     
-    # 2. D1 raw 결과가 'rows' (배열 형태)로 올 때
     rows = res.get("rows", [])
     if isinstance(rows, list) and len(rows) > 0:
-        # columns에서 'value'의 인덱스 찾기
         cols = res.get("columns", [])
         if "value" in cols:
             idx = cols.index("value")
@@ -201,15 +198,13 @@ for page_no in range(start_page, end_page + 1):
         break
 
 # ---------------------------------------------------------------------------
-# 4. 진행된 마지막 페이지 번호 DB에 저장
+# 4. 진행된 마지막 페이지 번호 DB에 확실하게 기록 (REPLACE INTO 사용)
 # ---------------------------------------------------------------------------
-update_state_sql = f"""
-INSERT INTO sync_state (key, value) VALUES ('last_page', {last_successful_page})
-ON CONFLICT(key) DO UPDATE SET value = {last_successful_page};
-"""
-execute_d1(update_state_sql)
+save_state_sql = f"REPLACE INTO sync_state (key, value) VALUES ('last_page', {last_successful_page});"
+state_save_res = execute_d1(save_state_sql)
 
 print("\n" + "="*60)
 print(f"✨ 동기화 완료! {start_page}~{last_successful_page}페이지 (총 {total_collected}개 병원 갱신)")
+print(f"📌 [상태 저장 검증] D1 sync_state 테이블에 'last_page' = {last_successful_page} 기록 완료")
 print(f"📌 다음 실행 위치: {last_successful_page + 1}페이지부터 진행 예정")
 print("="*60)
