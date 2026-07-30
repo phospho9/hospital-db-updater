@@ -3,6 +3,7 @@ import sys
 import time
 import requests
 import xmltodict
+import json
 
 # ---------------------------------------------------------------------------
 # 1. 환경변수 로드
@@ -45,32 +46,39 @@ def get_last_page_from_d1():
     res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
     
     if not res:
+        print("🔍 [D1 READ LOG] D1 응답이 비어있습니다.")
         return 0
     
-    # 💡 D1 /raw 응답 구조 전체 출력하여 디버깅 용이하게 설정
-    results = res.get("results", [])
+    print(f"🔍 [D1 READ LOG] 원본 D1 응답 데이터: {json.dumps(res, ensure_ascii=False)}")
     
-    # 1. results가 딕셔너리 리스트일 때 [{'value': 2}]
-    if isinstance(results, list) and len(results) > 0:
-        first_row = results[0]
-        if isinstance(first_row, dict):
-            return int(first_row.get("value", 0))
-        elif isinstance(first_row, list) and len(first_row) > 0:
-            return int(first_row[0])
-            
-    # 2. results가 단일 딕셔너리일 때 {'value': 2}
+    # 1. 'results' 내부 확인
+    results = res.get("results", {})
     if isinstance(results, dict):
-        return int(results.get("value", 0))
+        rows = results.get("rows", [])
+        if isinstance(rows, list) and len(rows) > 0:
+            val = rows[0][0]
+            print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (rows 방식): {val}")
+            return int(val)
+            
+    elif isinstance(results, list) and len(results) > 0:
+        first_item = results[0]
+        if isinstance(first_item, dict):
+            val = first_item.get("value", 0)
+            print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (dict 방식): {val}")
+            return int(val)
+        elif isinstance(first_item, list) and len(first_item) > 0:
+            val = first_item[0]
+            print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (list 방식): {val}")
+            return int(val)
 
-    # 3. rows 형태로 응답이 올 때
+    # 2. 최상위 'rows' 확인
     rows = res.get("rows", [])
     if isinstance(rows, list) and len(rows) > 0:
-        first_row = rows[0]
-        if isinstance(first_row, list) and len(first_row) > 0:
-            return int(first_row[0])
-        elif isinstance(first_row, dict):
-            return int(first_row.get("value", 0))
+        val = rows[0][0] if isinstance(rows[0], list) else rows[0]
+        print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (최상위 rows 방식): {val}")
+        return int(val)
 
+    print("⚠️ [D1 READ FAIL] 값을 파싱하지 못하여 0으로 초기화합니다.")
     return 0
 
 # ---------------------------------------------------------------------------
@@ -210,7 +218,7 @@ for page_no in range(start_page, end_page + 1):
         break
 
 # ---------------------------------------------------------------------------
-# 4. 진행된 마지막 페이지 번호 DB에 확실하게 기록 (REPLACE INTO 사용)
+# 4. 진행된 마지막 페이지 번호 DB에 확실하게 기록
 # ---------------------------------------------------------------------------
 save_state_sql = f"REPLACE INTO sync_state (key, value) VALUES ('last_page', {last_successful_page});"
 state_save_res = execute_d1(save_state_sql)
