@@ -31,15 +31,24 @@ def execute_d1(sql, params=[]):
             data = res.json()
             if data.get("success"):
                 return data["result"][0].get("results", [])
+            else:
+                print(f"    ⚠️ D1 응답 에러: {data.get('errors')}")
+        else:
+            print(f"    ❌ D1 HTTP 에러 [{res.status_code}]: {res.text}")
     except Exception as e:
-        print(f"❌ D1 실행 오류: {e}")
+        print(f"    ❌ D1 실행 예외: {e}")
     return None
 
 # ---------------------------------------------------------------------------
-# 2. 지난 실행 페이지 번호 조회 (sync_state)
+# 2. sync_state 테이블 자동 생성 및 지난 페이지 조회
 # ---------------------------------------------------------------------------
+# 테이블이 없으면 파이썬이 자동으로 생성합니다.
+execute_d1("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER);")
+
 state_res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
-last_page = state_res[0].get("value", 0) if state_res else 0
+last_page = 0
+if state_res and len(state_res) > 0:
+    last_page = state_res[0].get("value", 0)
 
 start_page = last_page + 1
 PAGES_PER_RUN = 2  # 회당 2페이지(1,000건)씩 진행
@@ -48,7 +57,7 @@ end_page = start_page + PAGES_PER_RUN - 1
 api_url = "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
 num_of_rows = 500
 
-print(f"🚀 공공데이터 롤링 동기화 시작! (이번 회차: {start_page}페이지 ~ {end_page}페이지)")
+print(f"🚀 공공데이터 롤링 동기화 시작! (이전 기록: {last_page}페이지 / 이번 회차: {start_page}~{end_page}페이지)")
 
 # ---------------------------------------------------------------------------
 # 3. 데이터 수집 및 이어서 저장
