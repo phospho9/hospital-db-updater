@@ -38,7 +38,7 @@ print("🚀 공공데이터 롤링 동기화 수집 시작 (회당 1,000건)..."
 total_collected = 0
 
 for page_no in range(1, MAX_PAGES + 1):
-    print(f"\n🔄 [{page_no}/{MAX_PAGES}페이지] 수집 중... ({num_of_rows}건)")
+    print(f"\n🔄 [{page_no}/{MAX_PAGES}페이지] 공공데이터 API 조회 중... ({num_of_rows}건 요청)")
     
     params = {
         "serviceKey": DATA_GO_KR_API_KEY,
@@ -71,20 +71,27 @@ for page_no in range(1, MAX_PAGES + 1):
         items = body.get('items', {}).get('item', [])
 
         if not items:
-            print("✅ 수집 완결!")
+            print("✅ 수집 대상 완결!")
             break
 
         if isinstance(items, dict):
             items = [items]
 
         sql_statements = []
-        for item in items:
+        sample_hospitals = [] # 로그 출력용 샘플 병원 목록
+
+        for idx, item in enumerate(items):
             hosp_id = str(item.get('ykiho', '')).replace("'", "''")
             name = str(item.get('yadmNm', '')).replace("'", "''")
             cl_name = str(item.get('clCdNm', '')).replace("'", "''")
             addr = str(item.get('addr', '')).replace("'", "''")
             phone = str(item.get('telno', '')).replace("'", "''")
             
+            # 로그 출력을 위해 처음 3개 병원 샘플 추출
+            if idx < 3:
+                short_addr = " ".join(addr.split()[:2]) if addr else "주소미상"
+                sample_hospitals.append(f"• {name} ({cl_name} / {short_addr})")
+
             try:
                 longitude = float(item.get('XPos', 0.0))
                 latitude = float(item.get('YPos', 0.0))
@@ -94,8 +101,6 @@ for page_no in range(1, MAX_PAGES + 1):
             has_beds = 1 if any(k in cl_name for k in ['병원', '요양병원']) else 0
             subjects = cl_name
 
-            # 💡 info_updated_at으로 타임스탬프를 분리하여 네이버 크롤러(updated_at)와 충돌 차단
-            # ON CONFLICT 시 네이버 크롤러가 모아둔 특화진료 정보(has_chuna 등)는 건드리지 않음
             sql = f"""
             INSERT INTO hospitals (
                 id, name, type, address, phone, latitude, longitude, 
@@ -125,7 +130,12 @@ for page_no in range(1, MAX_PAGES + 1):
 
         if d1_res.status_code == 200:
             total_collected += len(items)
-            print(f"✅ [{page_no}페이지] {len(items)}건 DB 저장 완료 (누적: {total_collected}건)")
+            print(f"✅ [{page_no}페이지] {len(items)}건 DB 동기화 성공! (이번 회차 누적: {total_collected}건)")
+            print("   🏥 주요 갱신 병원 예시:")
+            for sample in sample_hospitals:
+                print(f"     {sample}")
+            if len(items) > 3:
+                print(f"     ... 외 {len(items) - 3}개 의료기관")
         else:
             print(f"❌ D1 전송 실패 (상태 코드 {d1_res.status_code}):", d1_res.text)
             break
@@ -136,4 +146,6 @@ for page_no in range(1, MAX_PAGES + 1):
         print(f"❌ 예외 발생: {e}")
         break
 
-print(f"\n✨ 이번 회차 동기화 완료! 총 갱신건수: {total_collected}건")
+print("\n" + "="*60)
+print(f"✨ 이번 회차 동기화 완결! 총 {total_collected}개 병의원 기본 정보 최신화 완료")
+print("="*60)
