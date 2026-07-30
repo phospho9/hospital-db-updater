@@ -24,13 +24,13 @@ d1_headers = {
 }
 
 def execute_d1(sql, params=[]):
-    """D1 SQL 실행 전용 함수"""
+    """D1 SQL 실행 전용 안전 함수"""
     try:
         res = requests.post(d1_url, headers=d1_headers, json={"sql": sql, "params": params}, timeout=30)
         if res.status_code == 200:
             data = res.json()
-            if data.get("success"):
-                return data["result"][0].get("results", [])
+            if data.get("success") and data.get("result"):
+                return data["result"][0]
             else:
                 print(f"    ⚠️ D1 응답 에러: {data.get('errors')}")
         else:
@@ -39,16 +39,35 @@ def execute_d1(sql, params=[]):
         print(f"    ❌ D1 실행 예외: {e}")
     return None
 
-# ---------------------------------------------------------------------------
-# 2. sync_state 테이블 자동 생성 및 지난 페이지 조회
-# ---------------------------------------------------------------------------
-# 테이블이 없으면 파이썬이 자동으로 생성합니다.
-execute_d1("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER);")
+def get_last_page_from_d1():
+    """sync_state에서 안전하게 last_page 값 추출"""
+    execute_d1("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER);")
+    res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
+    
+    if not res:
+        return 0
+    
+    # 1. D1 raw 결과가 'results' (리스트 형태)로 올 때
+    results = res.get("results", [])
+    if isinstance(results, list) and len(results) > 0:
+        return results[0].get("value", 0)
+    
+    # 2. D1 raw 결과가 'rows' (배열 형태)로 올 때
+    rows = res.get("rows", [])
+    if isinstance(rows, list) and len(rows) > 0:
+        # columns에서 'value'의 인덱스 찾기
+        cols = res.get("columns", [])
+        if "value" in cols:
+            idx = cols.index("value")
+            return rows[0][idx]
+        return rows[0][0]
+        
+    return 0
 
-state_res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
-last_page = 0
-if state_res and len(state_res) > 0:
-    last_page = state_res[0].get("value", 0)
+# ---------------------------------------------------------------------------
+# 2. 지난 페이지 조회 및 롤링 페이지 범위 설정
+# ---------------------------------------------------------------------------
+last_page = get_last_page_from_d1()
 
 start_page = last_page + 1
 PAGES_PER_RUN = 2  # 회당 2페이지(1,000건)씩 진행
@@ -101,7 +120,7 @@ for page_no in range(start_page, end_page + 1):
 
         if not items:
             print("🎉 전국의 모든 병원 수집 완료! 다음 실행 시 1페이지부터 다시 시작합니다.")
-            last_successful_page = 0  # 1페이지로 리셋
+            last_successful_page = 0
             break
 
         if isinstance(items, dict):
@@ -170,7 +189,6 @@ for page_no in range(start_page, end_page + 1):
             print(f"❌ D1 전송 실패 (상태 코드 {d1_res.status_code}):", d1_res.text)
             break
 
-        # 전체 건수 도달 시 다음엔 1페이지부터 리셋
         if page_no * num_of_rows >= total_count:
             print("\n🎉 전국 모든 병원 끝까지 수집 완료! 다음 실행 시 1페이지로 리셋됩니다.")
             last_successful_page = 0
