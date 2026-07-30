@@ -23,22 +23,41 @@ d1_headers = {
     "Content-Type": "application/json"
 }
 
+def execute_d1(sql, params=[]):
+    """D1 SQL 실행 전용 함수"""
+    try:
+        res = requests.post(d1_url, headers=d1_headers, json={"sql": sql, "params": params}, timeout=30)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("success"):
+                return data["result"][0].get("results", [])
+    except Exception as e:
+        print(f"❌ D1 실행 오류: {e}")
+    return None
+
 # ---------------------------------------------------------------------------
-# 2. 공공데이터 포털 API 설정 (롤링 수집 설정)
+# 2. 지난 실행 페이지 번호 조회 (sync_state)
 # ---------------------------------------------------------------------------
+state_res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
+last_page = state_res[0].get("value", 0) if state_res else 0
+
+start_page = last_page + 1
+PAGES_PER_RUN = 2  # 회당 2페이지(1,000건)씩 진행
+end_page = start_page + PAGES_PER_RUN - 1
+
 api_url = "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
-num_of_rows = 500  # 페이지당 500건
-MAX_PAGES = 2      # 회당 2페이지 (총 1,000건) 수집 후 종료
+num_of_rows = 500
 
-print("🚀 공공데이터 롤링 동기화 수집 시작 (회당 1,000건)...")
+print(f"🚀 공공데이터 롤링 동기화 시작! (이번 회차: {start_page}페이지 ~ {end_page}페이지)")
 
 # ---------------------------------------------------------------------------
-# 3. 데이터 수집 및 D1 UPSERT
+# 3. 데이터 수집 및 이어서 저장
 # ---------------------------------------------------------------------------
 total_collected = 0
+last_successful_page = last_page
 
-for page_no in range(1, MAX_PAGES + 1):
-    print(f"\n🔄 [{page_no}/{MAX_PAGES}페이지] 공공데이터 API 조회 중... ({num_of_rows}건 요청)")
+for page_no in range(start_page, end_page + 1):
+    print(f"\n🔄 [{page_no}페이지] 공공데이터 API 조회 중... ({num_of_rows}건 요청)")
     
     params = {
         "serviceKey": DATA_GO_KR_API_KEY,
@@ -56,7 +75,7 @@ for page_no in range(1, MAX_PAGES + 1):
             time.sleep(3)
 
     if not api_res or api_res.status_code != 200:
-        print(f"❌ [{page_no}페이지] API 호출 실패로 이번 수집을 마칩니다.")
+        print(f"❌ [{page_no}페이지] API 호출 실패로 이번 회차를 마칩니다.")
         break
 
     try:
@@ -68,17 +87,19 @@ for page_no in range(1, MAX_PAGES + 1):
             break
 
         body = data_dict.get('response', {}).get('body', {})
+        total_count = int(body.get('totalCount', 0))
         items = body.get('items', {}).get('item', [])
 
         if not items:
-            print("✅ 수집 대상 완결!")
+            print("🎉 전국의 모든 병원 수집 완료! 다음 실행 시 1페이지부터 다시 시작합니다.")
+            last_successful_page = 0  # 1페이지로 리셋
             break
 
         if isinstance(items, dict):
             items = [items]
 
         sql_statements = []
-        sample_hospitals = [] # 로그 출력용 샘플 병원 목록
+        sample_hospitals = []
 
         for idx, item in enumerate(items):
             hosp_id = str(item.get('ykiho', '')).replace("'", "''")
@@ -87,7 +108,6 @@ for page_no in range(1, MAX_PAGES + 1):
             addr = str(item.get('addr', '')).replace("'", "''")
             phone = str(item.get('telno', '')).replace("'", "''")
             
-            # 로그 출력을 위해 처음 3개 병원 샘플 추출
             if idx < 3:
                 short_addr = " ".join(addr.split()[:2]) if addr else "주소미상"
                 sample_hospitals.append(f"• {name} ({cl_name} / {short_addr})")
@@ -130,6 +150,7 @@ for page_no in range(1, MAX_PAGES + 1):
 
         if d1_res.status_code == 200:
             total_collected += len(items)
+            last_successful_page = page_no
             print(f"✅ [{page_no}페이지] {len(items)}건 DB 동기화 성공! (이번 회차 누적: {total_collected}건)")
             print("   🏥 주요 갱신 병원 예시:")
             for sample in sample_hospitals:
@@ -140,12 +161,28 @@ for page_no in range(1, MAX_PAGES + 1):
             print(f"❌ D1 전송 실패 (상태 코드 {d1_res.status_code}):", d1_res.text)
             break
 
+        # 전체 건수 도달 시 다음엔 1페이지부터 리셋
+        if page_no * num_of_rows >= total_count:
+            print("\n🎉 전국 모든 병원 끝까지 수집 완료! 다음 실행 시 1페이지로 리셋됩니다.")
+            last_successful_page = 0
+            break
+
         time.sleep(0.5)
 
     except Exception as e:
         print(f"❌ 예외 발생: {e}")
         break
 
+# ---------------------------------------------------------------------------
+# 4. 진행된 마지막 페이지 번호 DB에 저장
+# ---------------------------------------------------------------------------
+update_state_sql = f"""
+INSERT INTO sync_state (key, value) VALUES ('last_page', {last_successful_page})
+ON CONFLICT(key) DO UPDATE SET value = {last_successful_page};
+"""
+execute_d1(update_state_sql)
+
 print("\n" + "="*60)
-print(f"✨ 이번 회차 동기화 완결! 총 {total_collected}개 병의원 기본 정보 최신화 완료")
+print(f"✨ 동기화 완료! {start_page}~{last_successful_page}페이지 (총 {total_collected}개 병원 갱신)")
+print(f"📌 다음 실행 위치: {last_successful_page + 1}페이지부터 진행 예정")
 print("="*60)
