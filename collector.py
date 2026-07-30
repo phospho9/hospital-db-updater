@@ -40,25 +40,37 @@ def execute_d1(sql, params=[]):
     return None
 
 def get_last_page_from_d1():
-    """sync_state에서 안전하게 last_page 값 추출"""
+    """sync_state에서 안전하게 last_page 값 완벽 추출"""
     execute_d1("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER);")
     res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
     
     if not res:
         return 0
     
+    # 💡 D1 /raw 응답 구조 전체 출력하여 디버깅 용이하게 설정
     results = res.get("results", [])
-    if isinstance(results, list) and len(results) > 0:
-        return results[0].get("value", 0)
     
+    # 1. results가 딕셔너리 리스트일 때 [{'value': 2}]
+    if isinstance(results, list) and len(results) > 0:
+        first_row = results[0]
+        if isinstance(first_row, dict):
+            return int(first_row.get("value", 0))
+        elif isinstance(first_row, list) and len(first_row) > 0:
+            return int(first_row[0])
+            
+    # 2. results가 단일 딕셔너리일 때 {'value': 2}
+    if isinstance(results, dict):
+        return int(results.get("value", 0))
+
+    # 3. rows 형태로 응답이 올 때
     rows = res.get("rows", [])
     if isinstance(rows, list) and len(rows) > 0:
-        cols = res.get("columns", [])
-        if "value" in cols:
-            idx = cols.index("value")
-            return rows[0][idx]
-        return rows[0][0]
-        
+        first_row = rows[0]
+        if isinstance(first_row, list) and len(first_row) > 0:
+            return int(first_row[0])
+        elif isinstance(first_row, dict):
+            return int(first_row.get("value", 0))
+
     return 0
 
 # ---------------------------------------------------------------------------
