@@ -46,40 +46,66 @@ def get_last_page_from_d1():
     res = execute_d1("SELECT value FROM sync_state WHERE key = 'last_page';")
     
     if not res:
-        print("🔍 [D1 READ LOG] D1 응답이 비어있습니다.")
         return 0
     
-    print(f"🔍 [D1 READ LOG] 원본 D1 응답 데이터: {json.dumps(res, ensure_ascii=False)}")
-    
-    # 1. 'results' 내부 확인
     results = res.get("results", {})
     if isinstance(results, dict):
         rows = results.get("rows", [])
         if isinstance(rows, list) and len(rows) > 0:
-            val = rows[0][0]
-            print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (rows 방식): {val}")
-            return int(val)
+            return int(rows[0][0])
             
     elif isinstance(results, list) and len(results) > 0:
         first_item = results[0]
         if isinstance(first_item, dict):
-            val = first_item.get("value", 0)
-            print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (dict 방식): {val}")
-            return int(val)
+            return int(first_item.get("value", 0))
         elif isinstance(first_item, list) and len(first_item) > 0:
-            val = first_item[0]
-            print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (list 방식): {val}")
-            return int(val)
+            return int(first_item[0])
 
-    # 2. 최상위 'rows' 확인
     rows = res.get("rows", [])
     if isinstance(rows, list) and len(rows) > 0:
-        val = rows[0][0] if isinstance(rows[0], list) else rows[0]
-        print(f"🎯 [D1 READ SUCCESS] 추출된 last_page 값 (최상위 rows 방식): {val}")
-        return int(val)
+        return int(rows[0][0] if isinstance(rows[0], list) else rows[0])
 
-    print("⚠️ [D1 READ FAIL] 값을 파싱하지 못하여 0으로 초기화합니다.")
     return 0
+
+def parse_time_str(time_val):
+    """'0900' 형태의 문자열을 '09:00' 포맷으로 변경"""
+    if not time_val:
+        return ""
+    t_str = str(time_val).zfill(4)
+    if len(t_str) == 4:
+        return f"{t_str[:2]}:{t_str[2:]}"
+    return str(time_val)
+
+def extract_business_hours_from_item(item):
+    """공공데이터 API item에서 요일별 진료시간 포맷팅 추출"""
+    day_keys = [
+        ('월요일', 'trmMonStart', 'trmMonEnd'),
+        ('화요일', 'trmTueStart', 'trmTueEnd'),
+        ('수요일', 'trmWedStart', 'trmWedEnd'),
+        ('목요일', 'trmThuStart', 'trmThuEnd'),
+        ('금요일', 'trmFriStart', 'trmFriEnd'),
+        ('토요일', 'trmSatStart', 'trmSatEnd'),
+        ('일요일', 'trmSunStart', 'trmSunEnd'),
+    ]
+    
+    hours_list = []
+    for day_name, start_key, end_key in day_keys:
+        start_t = parse_time_str(item.get(start_key))
+        end_t = parse_time_str(item.get(end_key))
+        
+        if start_t and end_t:
+            hours_list.append(f"{day_name}: {start_t} ~ {end_t}")
+        elif start_t or end_t:
+            hours_list.append(f"{day_name}: {start_t}{end_t}")
+            
+    business_hours_text = "\n".join(hours_list) if hours_list else ""
+    
+    # 점심시간 파싱 (공공데이터에 존재할 경우)
+    lunch_start = parse_time_str(item.get('lunchStart'))
+    lunch_end = parse_time_str(item.get('lunchEnd'))
+    lunch_time_text = f"{lunch_start} ~ {lunch_end}" if (lunch_start and lunch_end) else ""
+    
+    return business_hours_text, lunch_time_text
 
 # ---------------------------------------------------------------------------
 # 2. 지난 페이지 조회 및 롤링 페이지 범위 설정
@@ -153,6 +179,11 @@ for page_no in range(start_page, end_page + 1):
             addr = str(item.get('addr', '')).replace("'", "''")
             phone = str(item.get('telno', '')).replace("'", "''")
             
+            # 💡 진료시간 및 점심시간 추출
+            b_hours, l_time = extract_business_hours_from_item(item)
+            b_hours_sql = b_hours.replace("'", "''")
+            l_time_sql = l_time.replace("'", "''")
+            
             if idx < 3:
                 short_addr = " ".join(addr.split()[:2]) if addr else "주소미상"
                 sample_hospitals.append(f"• {name} ({cl_name} / {short_addr})")
@@ -170,12 +201,12 @@ for page_no in range(start_page, end_page + 1):
             INSERT INTO hospitals (
                 id, name, type, address, phone, latitude, longitude, 
                 is_silbi, subjects, has_night, has_chuna, has_beds, 
-                has_yakchim, is_cheopyak, info_updated_at
+                has_yakchim, is_cheopyak, business_hours, lunch_time, info_updated_at
             )
             VALUES (
                 '{hosp_id}', '{name}', '{cl_name}', '{addr}', '{phone}', {latitude}, {longitude}, 
                 0, '{subjects}', 0, 0, {has_beds}, 
-                0, 0, datetime('now')
+                0, 0, '{b_hours_sql}', '{l_time_sql}', datetime('now')
             )
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
@@ -186,6 +217,8 @@ for page_no in range(start_page, end_page + 1):
                 longitude=excluded.longitude,
                 subjects=excluded.subjects,
                 has_beds=excluded.has_beds,
+                business_hours=CASE WHEN excluded.business_hours != '' THEN excluded.business_hours ELSE hospitals.business_hours END,
+                lunch_time=CASE WHEN excluded.lunch_time != '' THEN excluded.lunch_time ELSE hospitals.lunch_time END,
                 info_updated_at=datetime('now');
             """
             sql_statements.append(sql)
@@ -218,7 +251,7 @@ for page_no in range(start_page, end_page + 1):
         break
 
 # ---------------------------------------------------------------------------
-# 4. 진행된 마지막 페이지 번호 DB에 확실하게 기록
+# 4. 진행된 마지막 페이지 번호 DB에 기록
 # ---------------------------------------------------------------------------
 save_state_sql = f"REPLACE INTO sync_state (key, value) VALUES ('last_page', {last_successful_page});"
 state_save_res = execute_d1(save_state_sql)
