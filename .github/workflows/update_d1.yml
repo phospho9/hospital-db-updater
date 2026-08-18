@@ -2,13 +2,10 @@ name: Update D1 Hospital Database
 
 on:
   schedule:
-    # 💡 [핵심 절감 1] 실행 횟수 축소
-    # 기존: 6시간마다 하루 4회 ('0 */6 * * *')
-    # 변경: 3일에 1회 실행 ('0 18 */3 * *' -> KST 기준 3일마다 새벽 03시 실행)
-    - cron: '0 18 */3 * *'
-  workflow_dispatch: # 관리자가 [Run workflow] 버튼으로 수동 실행 가능
+    # 💡 2시간마다 1회 실행 (매 짝수 시 45분 실행, UTC 기준)
+    - cron: '45 */2 * * *'
+  workflow_dispatch: # 수동 실행 버튼 유지
 
-# 💡 [핵심 절감 2] 중복 실행 자동 취소
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,7 +21,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          # cache: 'pip'  <-- 이 부분을 삭제했습니다.
 
       - name: Install dependencies
         run: |
